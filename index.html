@@ -2,92 +2,98 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Heavy Ink</title>
   <style>
+    /* Absolute minimal reset. No bloat. */
     *, *::before, *::after {
       box-sizing: border-box;
     }
+
     html, body {
       margin: 0;
       padding: 0;
       width: 100%;
       height: 100%;
-      background-color: #000000;
+      height: 100vh;
+      height: 100dvh;
+      background-color: #000000; /* True black */
       overflow: hidden;
       font-family: sans-serif;
-      /* Jobs-grade mobile touch isolation */
-      touch-action: none;
       overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
       -webkit-user-select: none;
       user-select: none;
-      -webkit-touch-callout: none;
     }
+
     #webgl-container {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
+      height: 100vh;
+      height: 100dvh;
       z-index: 1;
+      touch-action: none;
     }
   </style>
 </head>
 <body>
   <div id="webgl-container"></div>
 
+  <!-- Three.js CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
   <script>
+    // 1. Setup the basic scene
     const container = document.getElementById('webgl-container');
     const scene = new THREE.Scene();
     
+    // Orthographic camera because we are doing 2D plane manipulation
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
     
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Cap pixel ratio for performance
     container.appendChild(renderer.domElement);
 
-    // Responsive Typography Engine
+    // 2. Generate crisp typography via hidden 2D Canvas
     function createTextTexture() {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
-      const size = 2048; 
+      const size = 2048; // High res for sharp edges
       canvas.width = size;
       canvas.height = size;
 
+      // True black background
       ctx.fillStyle = '#000000';
       ctx.fillRect(0, 0, size, size);
 
+      // Stark white text
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       
-      const aspect = window.innerWidth / window.innerHeight;
-
-      // Mobile layout reflow for thumb-zone readability
-      if (aspect < 0.85) {
-        ctx.font = 'bold 360px Arial, sans-serif';
-        ctx.fillText('HEAVY', size / 2, size / 2 - 190);
-        ctx.fillText('INK', size / 2, size / 2 + 190);
-      } else {
-        ctx.font = 'bold 300px Arial, sans-serif';
-        ctx.fillText('HEAVY INK', size / 2, size / 2);
-      }
+      // Calculate font size relative to canvas
+      ctx.font = 'bold 300px Arial, sans-serif';
+      ctx.fillText('HEAVY INK', size / 2, size / 2);
 
       const texture = new THREE.CanvasTexture(canvas);
       texture.minFilter = THREE.LinearFilter;
       texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
       return texture;
     }
 
+    // 3. Custom GLSL Shader Material
+    const textTexture = createTextTexture();
+    
     const uniforms = {
       uTime: { value: 0.0 },
-      uTexture: { value: createTextTexture() },
+      uTexture: { value: textTexture },
       uMouse: { value: new THREE.Vector2(0.5, 0.5) },
-      uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+      uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+      uHoverState: { value: 0.0 }
     };
 
     const material = new THREE.ShaderMaterial({
@@ -104,31 +110,33 @@
         uniform sampler2D uTexture;
         uniform vec2 uMouse;
         uniform vec2 uResolution;
+        uniform float uHoverState;
 
         varying vec2 vUv;
 
         void main() {
+          // Normalize mouse coordinates to match UV space
           vec2 mouseUV = uMouse;
           mouseUV.y = 1.0 - mouseUV.y; 
 
-          // Normalized physics math: perfect circular fields across all devices
-          vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
-          float dist = distance(vUv * aspect, mouseUV * aspect);
+          // Calculate distance from current pixel to mouse
+          float dist = distance(vUv, mouseUV);
           
+          // Create a smooth, heavy magnetic distortion field
           float effectRadius = 0.25;
           float strength = smoothstep(effectRadius, 0.0, dist) * 0.15;
           
+          // Add organic liquid math
           vec2 distortion = vec2(
             sin(vUv.y * 20.0 + uTime * 2.0) * strength,
             cos(vUv.x * 20.0 + uTime * 2.0) * strength
           );
 
-          // Aspect-corrected directional vector for uniform magnetic push
-          vec2 dir = normalize((vUv - mouseUV) * aspect);
-          dir = dir / aspect; 
-          
+          // Apply distortion pushing outward from the cursor
+          vec2 dir = normalize(vUv - mouseUV);
           vec2 finalUV = vUv + dir * strength + distortion;
 
+          // Slight chromatic split for premium feel
           float r = texture2D(uTexture, finalUV + vec2(strength * 0.1, 0.0)).r;
           float g = texture2D(uTexture, finalUV).g;
           float b = texture2D(uTexture, finalUV - vec2(strength * 0.1, 0.0)).b;
@@ -138,50 +146,86 @@
       `
     });
 
+    // 4. Geometry and Mesh
     const geometry = new THREE.PlaneGeometry(2, 2);
     const plane = new THREE.Mesh(geometry, material);
     scene.add(plane);
 
+    // 5. Track Mouse/Touch Variables
     let targetMouse = new THREE.Vector2(0.5, 0.5);
     let currentMouse = new THREE.Vector2(0.5, 0.5);
+    
+    // Track input type for responsive lerp - touch needs faster response than mouse
+    let lastInputType = 'mouse';
 
-    // Frictionless IO mapping
-    const updatePointer = (clientX, clientY) => {
-      targetMouse.x = clientX / window.innerWidth;
-      targetMouse.y = clientY / window.innerHeight;
-    };
+    // Get viewport dimensions that respect visual viewport (for mobile address bar handling)
+    function getViewportDimensions() {
+      if (window.visualViewport) {
+        return {
+          width: window.visualViewport.width,
+          height: window.visualViewport.height
+        };
+      }
+      return {
+        width: window.innerWidth,
+        height: window.innerHeight
+      };
+    }
 
     window.addEventListener('mousemove', (e) => {
-      updatePointer(e.clientX, e.clientY);
+      lastInputType = 'mouse';
+      targetMouse.x = e.clientX / window.innerWidth;
+      targetMouse.y = e.clientY / window.innerHeight;
     });
 
-    window.addEventListener('touchstart', (e) => {
-      updatePointer(e.touches[0].clientX, e.touches[0].clientY);
-    }, { passive: false });
+    // Touch input — mapped identically to mouse for interaction parity
+    // Uses visualViewport for accurate coordinate mapping on mobile
+    function handleTouch(e) {
+      e.preventDefault();
+      lastInputType = 'touch';
+      const touch = e.touches[0];
+      if (touch) {
+        const vp = getViewportDimensions();
+        targetMouse.x = touch.clientX / vp.width;
+        targetMouse.y = touch.clientY / vp.height;
+      }
+    }
 
-    window.addEventListener('touchmove', (e) => {
-      e.preventDefault(); // Prevents iOS pull-to-refresh & scroll leakage
-      updatePointer(e.touches[0].clientX, e.touches[0].clientY);
-    }, { passive: false });
+    window.addEventListener('touchstart', handleTouch, { passive: false });
+    window.addEventListener('touchmove', handleTouch, { passive: false });
 
-    window.addEventListener('resize', () => {
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
-      
-      const oldTexture = uniforms.uTexture.value;
-      uniforms.uTexture.value = createTextTexture();
-      oldTexture.dispose();
-    });
+    // 6. Handle resizing seamlessly
+    function onResize() {
+      const vp = getViewportDimensions();
+      renderer.setSize(vp.width, vp.height);
+      uniforms.uResolution.value.set(vp.width, vp.height);
+    }
 
+    window.addEventListener('resize', onResize);
+
+    // Visual viewport resize covers iOS Safari URL bar show/hide
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', onResize);
+    }
+
+    // 7. Reduced motion support for accessibility
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const timeScale = prefersReducedMotion ? 0.15 : 1.0;
+
+    // 8. Render Loop
     const clock = new THREE.Clock();
 
     function animate() {
       requestAnimationFrame(animate);
 
-      currentMouse.lerp(targetMouse, 0.08);
+      // Smooth mouse interpolation (lerp) — faster for touch, slower for mouse
+      // Touch: 0.25 for responsive feel (simple 1:1 is too raw)
+      // Mouse: 0.08 for premium, settled feel
+      const lerpFactor = lastInputType === 'touch' ? 0.25 : 0.08;
+      currentMouse.lerp(targetMouse, lerpFactor);
       uniforms.uMouse.value.copy(currentMouse);
       
-      uniforms.uTime.value = clock.getElapsedTime();
+      uniforms.uTime.value = clock.getElapsedTime() * timeScale;
 
       renderer.render(scene, camera);
     }
