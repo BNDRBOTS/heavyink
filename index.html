@@ -15,8 +15,6 @@
       padding: 0;
       width: 100%;
       height: 100%;
-      height: 100vh;
-      height: 100dvh;
       background-color: #000000; /* True black */
       overflow: hidden;
       font-family: sans-serif;
@@ -32,8 +30,6 @@
       left: 0;
       width: 100%;
       height: 100%;
-      height: 100vh;
-      height: 100dvh;
       z-index: 1;
       touch-action: none;
     }
@@ -80,6 +76,9 @@
       ctx.fillText('HEAVY INK', size / 2, size / 2);
 
       const texture = new THREE.CanvasTexture(canvas);
+      // Ensure infinite black edges, preventing any repeating artifacts on mobile scaling or edge distortion
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
       texture.minFilter = THREE.LinearFilter;
       texture.magFilter = THREE.LinearFilter;
       return texture;
@@ -119,24 +118,58 @@
           vec2 mouseUV = uMouse;
           mouseUV.y = 1.0 - mouseUV.y; 
 
-          // Calculate distance from current pixel to mouse
-          float dist = distance(vUv, mouseUV);
+          vec2 uv = vUv;
+          float aspect = uResolution.x / uResolution.y;
+
+          // Mobile-first responsive layout (un-squish typography dynamically)
+          if (aspect < 1.0) {
+            // Replicate the exact visual presence and desktop-weight on portrait devices
+            float scaleY = 1.77 / aspect; 
+            uv.y = (uv.y - 0.5) * scaleY + 0.5;
+          }
+
+          // Compute aspect-corrected distance so touch targets are circular and accurate
+          vec2 distUV = vUv;
+          vec2 distMouse = mouseUV;
+          if (aspect < 1.0) {
+              distUV.x *= aspect;
+              distMouse.x *= aspect;
+          }
+
+          float dist = distance(distUV, distMouse);
           
           // Create a smooth, heavy magnetic distortion field
-          float effectRadius = 0.25;
+          // Increase effect radius massively on mobile for native feeling thumb zones
+          float effectRadius = aspect < 1.0 ? 0.4 : 0.25;
           float strength = smoothstep(effectRadius, 0.0, dist) * 0.15;
           
-          // Add organic liquid math
+          // Add organic liquid math perfectly scaled to physical pixels on mobile
           vec2 distortion = vec2(
             sin(vUv.y * 20.0 + uTime * 2.0) * strength,
-            cos(vUv.x * 20.0 + uTime * 2.0) * strength
+            cos(distUV.x * 20.0 + uTime * 2.0) * strength
           );
 
-          // Apply distortion pushing outward from the cursor
-          vec2 dir = normalize(vUv - mouseUV);
-          vec2 finalUV = vUv + dir * strength + distortion;
+          // Apply distortion pushing outward from the cursor natively in screen space
+          vec2 dir = distUV - distMouse;
+          // Prevent NaN artifacts by checking length safely
+          float len = length(dir);
+          if (len > 0.0) {
+              dir /= len; // normalize
+          } else {
+              dir = vec2(0.0);
+          }
+          
+          // Map direction back to original UV space before applying strength
+          if (aspect < 1.0) {
+              dir.x /= aspect;
+              // Re-normalize so the push force is visually equal in all physical directions
+              float nLen = length(dir);
+              if (nLen > 0.0) dir /= nLen;
+          }
 
-          // Slight chromatic split for premium feel
+          vec2 finalUV = uv + dir * strength + distortion;
+
+          // Slight chromatic split for premium feel (Desktop untouched, mobile perfectly scaled)
           float r = texture2D(uTexture, finalUV + vec2(strength * 0.1, 0.0)).r;
           float g = texture2D(uTexture, finalUV).g;
           float b = texture2D(uTexture, finalUV - vec2(strength * 0.1, 0.0)).b;
@@ -154,78 +187,67 @@
     // 5. Track Mouse/Touch Variables
     let targetMouse = new THREE.Vector2(0.5, 0.5);
     let currentMouse = new THREE.Vector2(0.5, 0.5);
-    
-    // Track input type for responsive lerp - touch needs faster response than mouse
-    let lastInputType = 'mouse';
 
-    // Get viewport dimensions that respect visual viewport (for mobile address bar handling)
-    function getViewportDimensions() {
-      if (window.visualViewport) {
-        return {
-          width: window.visualViewport.width,
-          height: window.visualViewport.height
-        };
-      }
-      return {
-        width: window.innerWidth,
-        height: window.innerHeight
-      };
+    function updatePointer(clientX, clientY) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      // Calculate precise position relative to the actual rendered canvas
+      let x = (clientX - rect.left) / rect.width;
+      let y = (clientY - rect.top) / rect.height;
+      // Clamp to ensure it doesn't go out of bounds if touch leaves canvas
+      targetMouse.x = Math.max(0, Math.min(1, x));
+      targetMouse.y = Math.max(0, Math.min(1, y));
     }
 
     window.addEventListener('mousemove', (e) => {
-      lastInputType = 'mouse';
-      targetMouse.x = e.clientX / window.innerWidth;
-      targetMouse.y = e.clientY / window.innerHeight;
+      updatePointer(e.clientX, e.clientY);
     });
 
-    // Touch input — mapped identically to mouse for interaction parity
-    // Uses visualViewport for accurate coordinate mapping on mobile
+    // Touch input — enhanced for zero-friction mobile tracking
     function handleTouch(e) {
-      e.preventDefault();
-      lastInputType = 'touch';
-      const touch = e.touches[0];
-      if (touch) {
-        const vp = getViewportDimensions();
-        targetMouse.x = touch.clientX / vp.width;
-        targetMouse.y = touch.clientY / vp.height;
+      if (e.cancelable) e.preventDefault();
+      if (e.touches.length > 0) {
+        updatePointer(e.touches[0].clientX, e.touches[0].clientY);
       }
     }
 
     window.addEventListener('touchstart', handleTouch, { passive: false });
     window.addEventListener('touchmove', handleTouch, { passive: false });
+    
+    // Prevent any native gestures or bounce on document
+    document.addEventListener('touchmove', (e) => {
+      if (e.cancelable) e.preventDefault();
+    }, { passive: false });
 
-    // 6. Handle resizing seamlessly
+    // 6. Handle resizing seamlessly with Visual Viewport for native mobile feel
     function onResize() {
-      const vp = getViewportDimensions();
-      renderer.setSize(vp.width, vp.height);
-      uniforms.uResolution.value.set(vp.width, vp.height);
+      const width = window.visualViewport ? window.visualViewport.width : window.innerWidth;
+      const height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      
+      renderer.setSize(width, height);
+      uniforms.uResolution.value.set(width, height);
     }
 
     window.addEventListener('resize', onResize);
 
-    // Visual viewport resize covers iOS Safari URL bar show/hide
+    // Visual viewport resize covers iOS Safari URL bar show/hide flawlessly
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', onResize);
     }
+    
+    // Initialize correct size immediately
+    onResize();
 
-    // 7. Reduced motion support for accessibility
-    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const timeScale = prefersReducedMotion ? 0.15 : 1.0;
-
-    // 8. Render Loop
+    // 7. Render Loop
     const clock = new THREE.Clock();
 
     function animate() {
       requestAnimationFrame(animate);
 
-      // Smooth mouse interpolation (lerp) — faster for touch, slower for mouse
-      // Touch: 0.25 for responsive feel (simple 1:1 is too raw)
-      // Mouse: 0.08 for premium, settled feel
-      const lerpFactor = lastInputType === 'touch' ? 0.25 : 0.08;
-      currentMouse.lerp(targetMouse, lerpFactor);
+      // Smooth mouse interpolation (lerp) for buttery feel
+      currentMouse.lerp(targetMouse, 0.08);
       uniforms.uMouse.value.copy(currentMouse);
       
-      uniforms.uTime.value = clock.getElapsedTime() * timeScale;
+      uniforms.uTime.value = clock.getElapsedTime();
 
       renderer.render(scene, camera);
     }
